@@ -47,7 +47,7 @@ function Dashboard({ stats, refresh }: any) {
 }
 
 function Library({ docs, refresh }: any) {
-  const [q, setQ] = useState(''); const [msg, setMsg] = useState('')
+  const [q, setQ] = useState(''); const [msg, setMsg] = useState(''); const [confirmId, setConfirmId] = useState('')
   const upload = async (files: FileList | null) => {
     if (!files?.length) return
     setMsg('Uploading and processing…')
@@ -94,7 +94,9 @@ function Library({ docs, refresh }: any) {
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         <a href={`/api/documents/${d.id}/file`} target="_blank" rel="noreferrer"><button className="ghost">Open PDF</button></a>
         <button className="ghost" onClick={async () => { await api(`/api/documents/${d.id}/reprocess`, { method: 'POST' }); await refresh() }}>Reprocess</button>
-        <button className="ghost" onClick={async () => { if (confirm('Delete this paper and all its entities, relationships and chunks?')) { await api(`/api/documents/${d.id}`, { method: 'DELETE' }); await refresh() } }}>Delete</button>
+        {confirmId === d.id
+          ? <><button className="ghost" onClick={async () => { await api(`/api/documents/${d.id}`, { method: 'DELETE' }); setConfirmId(''); await refresh() }}>Confirm delete — removes paper, entities and chunks</button><button className="ghost" onClick={() => setConfirmId('')}>Cancel</button></>
+          : <button className="ghost" onClick={() => setConfirmId(d.id)}>Delete</button>}
       </div></div>)}
   </>)
 }
