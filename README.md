@@ -1,8 +1,17 @@
 # ResearchMind — Intelligent Research Discovery and Knowledge Graph System
 
+Live: https://researchmind-eight.vercel.app (Vercel project `researchmind`, Hobby, shvm51)
+Repo: https://github.com/shvm51/researchmind
+Dashboard: https://vercel.com/shvm51/researchmind
+
 Upload research PDFs, inspect a typed knowledge graph, ask questions with
 page-level citations, and explore explainable, collection-only research
 opportunities. No fake statistics: every dashboard number comes from SQLite.
+
+> Vercel demo note: the live deployment stores data in `/tmp` (see `vercel.json`),
+> so uploaded papers are ephemeral — they may disappear when the serverless
+> instance recycles. For persistent use, run the backend locally or on a
+> persistent host (below) and point the frontend at it.
 
 ## Quick start (10 min)
 
