@@ -2,7 +2,7 @@
 Deleting a document cascades to its chunks/entities/relationships."""
 import os, re, shutil, uuid, time
 from pathlib import Path
-from fastapi import FastAPI, UploadFile, File, HTTPException, Query
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
@@ -93,29 +93,74 @@ def stats():
         "recent": rows("SELECT id,title,status,created_at FROM documents ORDER BY created_at DESC LIMIT 10"),
     }
 
+def _ingest_bytes(filename: str, data: bytes):
+    """Shared single-file ingest used by both upload paths."""
+    if not filename.lower().endswith(".pdf"):
+        raise HTTPException(400, f"{filename}: only PDF files are accepted")
+    if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
+        raise HTTPException(400, f"{filename}: exceeds {MAX_UPLOAD_MB} MB limit")
+    h = db.sha256_bytes(data)
+    dup = row("SELECT id FROM documents WHERE sha256=?", (h,))
+    if dup:
+        return {"id": dup["id"], "duplicate_of_existing": True, "status": "duplicate"}
+    doc_id = uuid.uuid4().hex[:12]
+    path = UPLOAD_DIR / f"{doc_id}_{safe_name(filename)}"
+    path.write_bytes(data)
+    c = db.connect()
+    c.execute("INSERT INTO documents (id,title,filename,sha256,status) VALUES (?,?,?,?,?)",
+              (doc_id, None, filename, h, "processing"))
+    c.commit(); c.close()
+    process_file(doc_id, str(path), filename, data)
+    return {"id": doc_id, "status": row("SELECT status FROM documents WHERE id=?", (doc_id,))["status"]}
+
 @app.post("/api/documents/upload")
 async def upload(files: list[UploadFile] = File(...)):
     out = []
     for f in files:
-        data = await f.read()
-        if not f.filename.lower().endswith(".pdf"):
-            raise HTTPException(400, f"{f.filename}: only PDF files are accepted")
-        if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
-            raise HTTPException(400, f"{f.filename}: exceeds {MAX_UPLOAD_MB} MB limit")
-        h = db.sha256_bytes(data)
-        dup = row("SELECT id FROM documents WHERE sha256=?", (h,))
-        if dup:
-            out.append({"id": dup["id"], "duplicate_of_existing": True, "status": "duplicate"}); continue
-        doc_id = uuid.uuid4().hex[:12]
-        path = UPLOAD_DIR / f"{doc_id}_{safe_name(f.filename)}"
-        path.write_bytes(data)
-        c = db.connect()
-        c.execute("INSERT INTO documents (id,title,filename,sha256,status) VALUES (?,?,?,?,?)",
-                  (doc_id, None, f.filename, h, "processing"))
-        c.commit(); c.close()
-        process_file(doc_id, str(path), f.filename, data)
-        out.append({"id": doc_id, "status": row("SELECT status FROM documents WHERE id=?", (doc_id,))["status"]})
+        out.append(_ingest_bytes(f.filename, await f.read()))
     return {"uploaded": out}
+
+# Chunked upload: Vercel serverless functions reject request bodies over
+# ~4.5 MB (FUNCTION_PAYLOAD_TOO_LARGE) before FastAPI ever runs, so files
+# over 4 MB are split client-side into 3 MB chunks and reassembled here.
+# Each chunk request stays well under the limit; the 50 MB cap still applies
+# to the reassembled file.
+CHUNK_DIR = DATA_DIR / "upload_tmp"
+
+@app.post("/api/documents/upload-chunk")
+async def upload_chunk(upload_id: str = Form(...), filename: str = Form(...),
+                       chunk_index: int = Form(...), total_chunks: int = Form(...),
+                       chunk: UploadFile = File(...)):
+    if not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", upload_id):
+        raise HTTPException(400, "Invalid upload_id")
+    if not filename.lower().endswith(".pdf"):
+        raise HTTPException(400, "Only PDF files are accepted")
+    if not (0 <= chunk_index < total_chunks <= 50):
+        raise HTTPException(400, "Invalid chunk range")
+    data = await chunk.read()
+    if len(data) > 4 * 1024 * 1024:
+        raise HTTPException(400, "Chunk exceeds 4 MB")
+    d = CHUNK_DIR / upload_id
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"part_{chunk_index:04d}").write_bytes(data)
+    received = len(list(d.glob("part_*")))
+    return {"upload_id": upload_id, "received": received, "total_chunks": total_chunks}
+
+class CompleteReq(BaseModel):
+    upload_id: str
+    filename: str
+
+@app.post("/api/documents/upload-complete")
+def upload_complete(req: CompleteReq):
+    if not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", req.upload_id):
+        raise HTTPException(400, "Invalid upload_id")
+    d = CHUNK_DIR / req.upload_id
+    parts = sorted(d.glob("part_*")) if d.exists() else []
+    if not parts:
+        raise HTTPException(404, "No chunks found for this upload")
+    data = b"".join(p.read_bytes() for p in parts)
+    shutil.rmtree(d, ignore_errors=True)
+    return {"uploaded": [_ingest_bytes(req.filename, data)]}
 
 @app.get("/api/documents")
 def list_docs(q: str = "", status: str = ""):

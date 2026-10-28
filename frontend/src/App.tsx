@@ -50,9 +50,39 @@ function Library({ docs, refresh }: any) {
   const [q, setQ] = useState(''); const [msg, setMsg] = useState('')
   const upload = async (files: FileList | null) => {
     if (!files?.length) return
-    const fd = new FormData(); Array.from(files).forEach(f => fd.append('files', f))
     setMsg('Uploading and processing…')
-    try { const r = await api('/api/documents/upload', { method: 'POST', body: fd }); setMsg(JSON.stringify(r.uploaded)); await refresh() } catch (e: any) { setMsg('Upload failed: ' + e.message) }
+    try {
+      for (const f of Array.from(files)) {
+        // Vercel rejects single requests over ~4.5 MB, so large files are
+        // split into 3 MB chunks and reassembled server-side.
+        if (f.size > 4 * 1024 * 1024) {
+          const uploadId = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now())).replace(/-/g, '').slice(0, 24)
+          const CHUNK = 3 * 1024 * 1024
+          const total = Math.ceil(f.size / CHUNK)
+          for (let i = 0; i < total; i++) {
+            setMsg(`Uploading ${f.name}: chunk ${i + 1}/${total}…`)
+            const fd = new FormData()
+            fd.append('upload_id', uploadId); fd.append('filename', f.name)
+            fd.append('chunk_index', String(i)); fd.append('total_chunks', String(total))
+            fd.append('chunk', f.slice(i * CHUNK, (i + 1) * CHUNK))
+            await api('/api/documents/upload-chunk', { method: 'POST', body: fd })
+          }
+          setMsg(`Processing ${f.name}…`)
+          const r = await api('/api/documents/upload-complete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ upload_id: uploadId, filename: f.name }) })
+          setMsg(JSON.stringify(r.uploaded))
+        } else {
+          const fd = new FormData(); fd.append('files', f)
+          const r = await api('/api/documents/upload', { method: 'POST', body: fd })
+          setMsg(JSON.stringify(r.uploaded))
+        }
+      }
+      await refresh()
+    } catch (e: any) {
+      const friendly = String(e.message || '').includes('PAYLOAD_TOO_LARGE')
+        ? 'This file is too large for a single request. It should have used chunked upload — please retry, or split/Compress the PDF below 50 MB and try again.'
+        : 'Upload failed: ' + e.message
+      setMsg(friendly)
+    }
   }
   const filtered = docs.filter((d: any) => !q || (d.title || '').toLowerCase().includes(q.toLowerCase()) || d.filename.toLowerCase().includes(q.toLowerCase()))
   return (<><h1>Research library</h1>

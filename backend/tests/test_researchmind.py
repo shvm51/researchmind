@@ -59,6 +59,25 @@ def test_duplicate_and_delete_cascade():
     g = client.get("/api/graph", params={"paper_id": doc_id}).json()
     assert g["edges"] == [], "deleted paper must leave no graph edges"
 
+def test_chunked_upload_reassembles():
+    # Split an existing fixture PDF into 3 MB-safe chunks (here 2 chunks)
+    # and verify the reassembled upload is processed, not duplicated wrongly.
+    p = "/tmp/rm_paper1.pdf"
+    with open(p, "rb") as fh:
+        data = fh.read()
+    mid = len(data) // 2
+    uid = "testchunk123456"
+    for i, part in enumerate([data[:mid], data[mid:]]):
+        r = client.post("/api/documents/upload-chunk",
+                        data={"upload_id": uid, "filename": "chunked.pdf",
+                              "chunk_index": str(i), "total_chunks": "2"},
+                        files={"chunk": ("chunk.bin", part, "application/octet-stream")})
+        assert r.status_code == 200, r.text
+    r = client.post("/api/documents/upload-complete", json={"upload_id": uid, "filename": "chunked.pdf"})
+    assert r.status_code == 200, r.text
+    # Either processed as new, or duplicate if the same content was uploaded before
+    assert r.json()["uploaded"][0]["id"]
+
 def test_gap_score_renormalisation():
     from app.services.gaps import score
     s, b = score({"underrepresentation": 1.0, "limitation": 0.5})

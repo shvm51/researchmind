@@ -12,6 +12,11 @@ opportunities. No fake statistics: every dashboard number comes from SQLite.
 > so uploaded papers are ephemeral — they may disappear when the serverless
 > instance recycles. For persistent use, run the backend locally or on a
 > persistent host (below) and point the frontend at it.
+>
+> Upload size note: Vercel serverless functions reject single requests over
+> ~4.5 MB, so the frontend automatically splits files over 4 MB into 3 MB
+> chunks (`/api/documents/upload-chunk` + `/api/documents/upload-complete`).
+> The 50 MB backend cap still applies to the reassembled file.
 
 ## Quick start (10 min)
 
